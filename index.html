@@ -422,7 +422,7 @@ button:focus-visible,a:focus-visible,[role="button"]:focus-visible{outline:3px s
 const FEEDS = [
   'https://raw.githubusercontent.com/jasonalves-debug/gridlock/data/incidents.json',
 ];
-const DEFAULT_SPOT = [43.7508, -79.2830]; // Lawrence & Birchmount, until the phone answers
+const DEFAULT_SPOT = [43.74538, -79.29472]; // Lawrence & Warden, until the phone answers
 const NEAR_KM = 2, FRESH_MIN = 30, MAX_ROWS = 80;
 const WINDOWS = [[60, '1 h'], [120, '2 h'], [360, '6 h'], [1440, '24 h']];
 const COLORS = { police: '#1d4ed8', fire: '#f07800', medical: '#0b9466' };
@@ -789,7 +789,7 @@ function onPos(p) {
 }
 function onPosErr(e) {
   if (S.locLive && e.code !== 1) return; // a hiccup after a good fix: keep using the last one quietly
-  S.locErr = e.code === 1 ? 'Location is off for this page, so this is ' + (S.me ? 'your last known spot' : 'Lawrence & Birchmount')
+  S.locErr = e.code === 1 ? 'Location is off for this page, so this is ' + (S.me ? 'your last known spot' : 'Lawrence & Warden')
     : S.me ? 'Waiting for GPS, showing your last known spot' : 'Waiting for GPS';
   render();
 }
@@ -841,7 +841,7 @@ S.home = store.get('home', null);
 function toast(msg) { const t = $('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, 3200); }
 function setHome() {
   S.home = centre().slice(); store.set('home', S.home); S.atHome = !!S.pin; render();
-  toast(S.me || S.pin ? 'Home saved here. Hold the house button to move it.' : 'No location yet, so home is Lawrence & Birchmount. Hold the house button to move it.');
+  toast(S.me || S.pin ? 'Home saved here. Hold the house button to move it.' : 'No location yet, so home is Lawrence & Warden. Hold the house button to move it.');
 }
 function goHome() { S.pin = S.home.slice(); S.atHome = true; S.follow = false; S.sel = null; fitRing(true); drawRings(); render(); showBack(); }
 (() => {
