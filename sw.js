@@ -1,6 +1,6 @@
 // Network first, so every open gets fresh data; falls back to the last copy when there's no signal.
 // Only same-origin files (page, icons, streets.json). Incident feeds are cross-origin and never cached here.
-const CACHE = 'nw-v1';
+const CACHE = 'nw-v2';
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', e => {
