@@ -362,6 +362,12 @@ button:focus-visible,a:focus-visible,[role="button"]:focus-visible{outline:3px s
 @media(max-width:430px){.brand-name small{font-size:12px}.brand-name span{font-size:23px}.city svg{display:none}}
 @media(max-width:370px){.city{display:none}}
 
+.newpill{flex:none;font-size:12px;font-weight:900;font-stretch:100%;letter-spacing:.08em;text-transform:uppercase;background:var(--red);color:#fff;padding:3px 6px 2px;border-radius:4px;line-height:1.1}
+.hero .newpill{font-size:13px}
+#toast{left:50%;top:18px;transform:translateX(-50%);width:max-content;max-width:calc(100% - 110px);background:var(--ink);color:var(--paper);font-weight:800;font-size:15px;line-height:1.35;padding:11px 14px;border-radius:8px;box-shadow:3px 3px 0 var(--red);text-align:center}
+#toast[hidden]{display:none}
+#home{-webkit-user-select:none;user-select:none}
+.row .what{display:block;line-height:1.1}.row .what span{white-space:normal;overflow:visible}.row .what .flag,.row .what .newpill{display:inline-block;margin-left:7px;vertical-align:3px}
 </style>
 </head>
 <body>
@@ -382,11 +388,13 @@ button:focus-visible,a:focus-visible,[role="button"]:focus-visible{outline:3px s
     <div id="map"></div>
 
     <div class="ov" id="tools">
+      <button class="btn" id="home" aria-label="Show home (hold to set home here)" aria-pressed="false" title="Home · hold to set"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 11 12 4l8.5 7"/><path d="M6 9.5V20h12V9.5"/><path d="M10 20v-5h4v5"/></svg></button>
       <button class="btn" id="refresh" aria-label="Refresh calls and location" title="Refresh calls and location"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.4-5.7"/><path d="M20 4v5h-5"/></svg></button>
       <button class="btn" id="region" aria-label="Show all of Toronto" title="Show all of Toronto"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
       <button class="btn" id="compass" aria-label="Point arrows the way you face" aria-pressed="false" title="Point arrows the way you face"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 6l2.6 6h-5.2z" fill="currentColor" stroke="none"/><path d="M12 18l-2.6-6h5.2z" fill="currentColor" stroke="none" opacity=".35"/></svg></button>
     </div>
     <div class="ov" id="backme"><button id="backbtn">Back to me</button></div>
+    <div class="ov" id="toast" role="status" hidden></div>
 
   </section>
   <section id="sheet" aria-label="Nearby calls">
@@ -604,7 +612,7 @@ function drawRings() {
 
 map.on('dragstart', () => { S.follow = false; showBack(); });
 function pinAt(latlng) {
-  S.pin = [latlng.lat, latlng.lng]; S.follow = false; S.sel = null;
+  S.pin = [latlng.lat, latlng.lng]; S.follow = false; S.sel = null; S.atHome = false;
   drawRings(); render(); showBack();
   if (navigator.vibrate) navigator.vibrate(30);
 }
@@ -621,7 +629,7 @@ map.on('contextmenu', e => pinAt(e.latlng)); // right-click, Android long-press
   el.addEventListener('touchend', () => clearTimeout(timer), { passive: true });
 })();
 $('backbtn').onclick = () => {
-  S.pin = null; S.follow = true; S.sel = null;
+  S.pin = null; S.follow = true; S.sel = null; S.atHome = false;
   fitRing(true); drawRings(); render(); showBack();
 };
 function showBack() { const away = S.pin || !S.follow; $('backme').style.display = away ? 'block' : 'none'; }
@@ -817,6 +825,36 @@ function updateArrows() {
   document.querySelectorAll('.arrow').forEach(a => { a.style.transform = 'rotate(' + ((+a.dataset.b - f + 360) % 360) + 'deg)'; });
 }
 
+// ── new since your last look: remember which calls were on screen when the page was put away ──
+let seenIds = new Set(store.get('seen', [])), firstLook = store.get('seen', null) == null;
+const isNew = r => !firstLook && !seenIds.has(r.id);
+function markSeen() {
+  if (!S.calls.length) return;
+  const ids = S.calls.map(c => c.id); store.set('seen', ids);
+  seenIds = new Set(ids); firstLook = false; // coming back later flags only what arrived after this
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') markSeen(); });
+window.addEventListener('pagehide', markSeen);
+
+// ── home: tap to look around home, tap again for back to you; hold to set home to the spot in the middle of the rings ──
+S.home = store.get('home', null);
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, 3200); }
+function setHome() {
+  S.home = centre().slice(); store.set('home', S.home); S.atHome = !!S.pin; render();
+  toast(S.me || S.pin ? 'Home saved here. Hold the house button to move it.' : 'No location yet, so home is Lawrence & Birchmount. Hold the house button to move it.');
+}
+function goHome() { S.pin = S.home.slice(); S.atHome = true; S.follow = false; S.sel = null; fitRing(true); drawRings(); render(); showBack(); }
+(() => {
+  const b = $('home'); let timer = null, held = false;
+  b.addEventListener('pointerdown', () => { held = false; clearTimeout(timer); timer = setTimeout(() => { held = true; if (navigator.vibrate) navigator.vibrate(30); setHome(); }, 700); });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => b.addEventListener(ev, () => clearTimeout(timer)));
+  b.addEventListener('contextmenu', e => e.preventDefault());
+  b.onclick = () => {
+    if (held) { held = false; return; }
+    if (!S.home) setHome(); else if (S.atHome) $('backbtn').onclick(); else goHome();
+  };
+})();
+
 // ── render ──
 function ago(t) {
   const m = Math.max(0, Math.round((Date.now() - t) / 60000));
@@ -905,11 +943,13 @@ function renderAll() {
   const turn = r => ((r.b - f + 360) % 360).toFixed(0);
 
   // header
-  $('title').textContent = S.pin ? 'Near this spot' : 'Near you';
+  $('title').textContent = S.atHome ? 'Near home' : S.pin ? 'Near this spot' : 'Near you';
+  $('home').classList.toggle('on', !!S.atHome); $('home').setAttribute('aria-pressed', !!S.atHome);
   $('compass').setAttribute('aria-pressed', S.compassOn);
   const within = rows.filter(r => r.km <= 5).length;
   $('count').textContent = S.generated ? `${within} within 5 km` : '';
-  $('fresh').textContent = freshness(now); $('fresh').className = S.freshClass;
+  const newN = rows.filter(isNew).length;
+  $('fresh').textContent = freshness(now) + (newN ? `. ${newN} new since your last look` : ''); $('fresh').className = S.freshClass;
 
   // map dots
   const want = new Set();
@@ -938,7 +978,7 @@ function renderAll() {
   const why = hot.length ? `${hot.length === 1 ? 'New call' : hot.length + ' new calls'} within ${NEAR_KM} km in the last ${FRESH_MIN} min` : 'Closest call';
   const heroHtml = `<div class="hero${hot.length ? ' hot' : ''}${S.sel === h.id ? ' sel' : ''}" data-id="${esc(h.id)}" role="button" tabindex="0" aria-expanded="${S.sel === h.id}" aria-label="${esc(h.label)}, ${esc(h.loc)}. Show call details" style="--c:${COLORS[h.kind]}">
     <div class="hero-meta"><span class="eyebrow">${hot.length ? 'Nearby & recent' : 'Closest call'}</span><span class="incident-kind">${GLYPH[h.kind]}${KIND_NAME[h.kind]}</span></div>
-    <div class="what">${esc(h.label)}${SERIOUS(h) ? '<i class="flag ser" title="Serious"></i>' : ''}</div>
+    <div class="what">${esc(h.label)}${isNew(h) ? '<b class="newpill">New</b>' : ''}${SERIOUS(h) ? '<i class="flag ser" title="Serious"></i>' : ''}</div>
     <div class="where">${esc(h.loc)}</div>
     <div class="top"><div class="distance"><div class="dist">${fmtDist(h.km, h.approx)}</div><span class="distance-label">away</span></div><div class="direction-meta"><span class="when">${ago(h.t)}</span><div class="compass"><div class="arrow" data-b="${h.b.toFixed(0)}" style="transform:rotate(${turn(h)}deg)">${ARROW}</div></div></div></div>
     <div class="why"><span>${why}</span><svg class="disclosure" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></div>
@@ -951,7 +991,7 @@ function renderAll() {
     const flag = SERIOUS(r) ? '<i class="flag ser" title="Serious"></i>' : isFresh(r, now) ? '<i class="flag new" title="New"></i>' : '';
     return `<div class="row${old ? ' old' : ''}${S.sel === r.id ? ' sel' : ''}" data-id="${esc(r.id)}" role="button" tabindex="0" aria-expanded="${S.sel === r.id}" aria-label="${esc(r.label)}, ${esc(r.loc)}. Show call details" style="--c:${COLORS[r.kind]}">
       <span class="glyph">${GLYPH[r.kind]}</span>
-      <div class="mid"><div class="what"><span>${esc(r.label)}</span>${flag}</div><div class="sub">${esc(r.loc)}</div></div>
+      <div class="mid"><div class="what"><span>${esc(r.label)}</span>${isNew(r) ? '<b class="newpill">New</b>' : ''}${flag}</div><div class="sub">${esc(r.loc)}</div></div>
       <div class="far"><div class="km">${fmtDist(r.km, r.approx)}<span class="arrow" data-b="${r.b.toFixed(0)}" style="transform:rotate(${turn(r)}deg)">${ARROW}</span></div><div class="ago">${ago(r.t)}</div></div>
       ${details(r)}
     </div>`;
