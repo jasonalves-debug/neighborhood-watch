@@ -367,6 +367,7 @@ button:focus-visible,a:focus-visible,[role="button"]:focus-visible{outline:3px s
 #toast{left:50%;top:18px;transform:translateX(-50%);width:max-content;max-width:calc(100% - 110px);background:var(--ink);color:var(--paper);font-weight:800;font-size:15px;line-height:1.35;padding:11px 14px;border-radius:8px;box-shadow:3px 3px 0 var(--red);text-align:center}
 #toast[hidden]{display:none}
 #home{-webkit-user-select:none;user-select:none}
+.tags{display:block;margin-top:3px;font-weight:800;color:var(--ink);white-space:normal}
 .row .what{display:block;line-height:1.1}.row .what span{white-space:normal;overflow:visible}.row .what .flag,.row .what .newpill{display:inline-block;margin-left:7px;vertical-align:3px}
 </style>
 </head>
@@ -691,6 +692,18 @@ const TPS_NOTE = {
   MISVU: 'A missing person considered vulnerable or at risk.',
   JUVLO: 'A missing young person has been found.',
 };
+// Fire dispatch wording explained, matched on the fire department's call type
+const TFS_NOTE = [
+  [/alarm single source/i, 'A single alarm went off; crews go to check it.'],
+  [/alarm highrise/i, 'An alarm went off in a high-rise building.'],
+  [/elevator/i, 'People stuck in an elevator.'],
+  [/check call/i, 'Crews sent to check out a report.'],
+  [/trapped/i, 'A crash where someone is trapped in a vehicle.'],
+  [/accident with fire/i, 'A crash where a vehicle caught fire.'],
+  [/vehicle - personal injury/i, 'A crash where someone was hurt.'],
+  [/water problem/i, 'A water leak or flooding.'],
+];
+const fireNote = t => (TFS_NOTE.find(([re]) => re.test(t || '')) || [, ''])[1];
 function timingNote(label) {
   if (/just occurred$/i.test(label)) return 'Reported right after it happened.';
   if (/in progress$/i.test(label)) return 'Reported while it was still happening.';
@@ -699,9 +712,32 @@ function timingNote(label) {
 function labelOf(i, k) {
   if (k === 'medical') return 'Medical call';
   if (k === 'police') return policeLabel(i);
-  const p = i.type_plain || i.type || 'Fire call';
+  const p = String(i.type_plain || i.type || 'Fire call').replace(/\s+/g, ' ').trim();
   return p === p.toUpperCase() ? niceCase(p) : p;
 }
+
+// ── how serious a call is: the feed's own rating, corrected where it's clearly off ──
+const RANK = { low: 0, medium: 1, high: 2, critical: 3 };
+const POLICE_SEV = { FIG: 'high', ESCCU: 'high', IMPDR: 'medium', PIACC: 'medium', FTRPI: 'medium', MISEL: 'medium', MISVU: 'medium',
+  HOLAL: 'medium', GASLE: 'medium', INDEX: 'medium', EXPJU: 'medium', BREEN: 'medium' }; // plain B&E is usually reported after the fact
+const unitCount = i => String(i.units || '').split(',').filter(u => u.trim()).length;
+function rateSev(i, k) {
+  const feed = i.severity || 'low';
+  if (k === 'police') return POLICE_SEV[String(i.type || '').toUpperCase()] || feed;
+  const t = String(i.type || '');
+  if (unitCount(i) >= 8) return 'high';                       // big response = big event (building fires get 11+)
+  if (/trapped|accident with fire/i.test(t)) return 'high';
+  if (/^fire\s*-/i.test(t) && !/grass|rubbish/i.test(t)) return 'high';
+  if (/^alarm|check call|elevator|water problem|grass|rubbish/i.test(t)) return 'low';
+  return RANK[feed] >= 2 ? feed : 'medium';
+}
+// police and fire logging the same event: only when the call types match, not just "nearby"
+const SAME_EVENT = [
+  [/^(FIR|SEEFI|FIRAL|GASLE)$/, /fire|alarm|gas/i],
+  [/^(PIACC|FTRPI|PDACC|FTRPD)$/, /vehicle/i],
+  [/^(SEEAM|ASSAM)$/, /medical/i],
+];
+const sameEvent = (pol, fir) => SAME_EVENT.some(([a, b]) => a.test(pol.code || '') && b.test(fir.code || ''));
 
 function prepare(list) {
   const out = [];
@@ -710,9 +746,10 @@ function prepare(list) {
     if (i.lat < 43.4 || i.lat > 44.1 || i.lng < -80 || i.lng > -78.8) continue; // bad geocodes (e.g. 0,0) land far outside the GTA
     const k = kindOf(i);
     out.push({ id: i.id, kind: k, label: labelOf(i, k), loc: tidyLoc(i), lat: i.lat, lng: i.lng, t,
-      approx: !!i.approximate, sev: i.severity || 'low', code: i.type,
-      note: k === 'police' ? (TPS_NOTE[String(i.type || '').toUpperCase()] || timingNote(labelOf(i, k))) : '', div: i.division || '', units: i.units || '',
-      related: (i.related || []).length });
+      approx: !!i.approximate, sev: rateSev(i, k), code: i.type, nUnits: unitCount(i),
+      links: (i.related || []).filter(r => r.id.slice(0, 3) !== String(i.id).slice(0, 3) && r.minutes_apart <= 20 && r.distance_m <= 600).map(r => r.id),
+      note: k === 'police' ? (TPS_NOTE[String(i.type || '').toUpperCase()] || timingNote(labelOf(i, k))) : k === 'fire' ? fireNote(i.type) : '', div: i.division || '', units: i.units || '',
+      related: (i.related || []).filter(r => r.minutes_apart <= 30).length });
   }
   // same event often arrives twice (two callers, re-dispatch): keep the first
   out.sort((a, b) => a.t - b.t);
@@ -721,7 +758,24 @@ function prepare(list) {
     const dup = kept.slice(-60).some(k => k.kind === c.kind && c.t - k.t < 1800e3 && Math.abs(k.lat - c.lat) < .0018 && Math.abs(k.lng - c.lng) < .0025 && k.code === c.code);
     if (!dup) kept.push(c);
   }
-  return kept;
+  // one row per event when police and fire both logged it; keep the more serious entry (fire wins ties: it has the units)
+  const byId = new Map(kept.map(c => [c.id, c])), gone = new Set();
+  for (const c of kept) {
+    if (gone.has(c.id)) continue;
+    for (const id of c.links) {
+      const o = byId.get(id);
+      if (!o || gone.has(o.id) || (o.kind === 'police') === (c.kind === 'police')) continue;
+      const pol = c.kind === 'police' ? c : o, fir = pol === c ? o : c;
+      if (!sameEvent(pol, fir)) continue;
+      const keep = RANK[pol.sev] > RANK[fir.sev] ? pol : fir, drop = keep === pol ? fir : pol;
+      keep.both = true; keep.otherLabel = drop.label; keep.otherKind = drop.kind;
+      if (RANK[drop.sev] > RANK[keep.sev]) keep.sev = drop.sev;
+      keep.related = Math.max(0, keep.related - 1);
+      gone.add(drop.id);
+      if (drop === c) break;
+    }
+  }
+  return kept.filter(c => !gone.has(c.id));
 }
 
 async function getJSON(url) {
@@ -900,12 +954,14 @@ function renderControls() {
   $('sev').classList.toggle('on', S.serious); $('sev').setAttribute('aria-pressed', S.serious);
 }
 
+const tagline = r => { const t = [r.both && 'Police + fire', r.nUnits >= 3 && `${r.nUnits} units`].filter(Boolean); return t.length ? `<span class="tags">${t.join(' · ')}</span>` : ''; };
 function details(r) {
   return `<div class="det">
     ${r.note ? `<p class="note">${esc(r.note)}</p>` : ''}
     <p><b>${clock(r.t)}</b>, ${KIND_NAME[r.kind]}${r.code && r.kind === 'police' ? ` (code ${esc(r.code)})` : ''}</p>
     ${r.approx ? '<p>Medical calls only list the postal area, so the spot is approximate.</p>' : ''}
-    ${r.units ? `<p>Units on scene: <b>${esc(r.units)}</b></p>` : ''}
+    ${r.both ? `<p>Police and firefighters are both on this. ${r.otherKind === 'police' ? 'Police' : 'Fire'} logged it as <b>${esc(r.otherLabel)}</b>.</p>` : ''}
+    ${r.nUnits ? `<p><b>${r.nUnits} unit${r.nUnits > 1 ? 's' : ''}</b> responding: ${esc(r.units)}</p>` : ''}
     ${r.div ? `<p>${r.kind === 'police' ? 'Division' : 'Station'} ${esc(r.div)}</p>` : ''}
     ${r.related ? `<p><b>${r.related}</b> other call${r.related > 1 ? 's' : ''} close by around the same time</p>` : ''}
   </div>`;
@@ -979,7 +1035,7 @@ function renderAll() {
   const heroHtml = `<div class="hero${hot.length ? ' hot' : ''}${S.sel === h.id ? ' sel' : ''}" data-id="${esc(h.id)}" role="button" tabindex="0" aria-expanded="${S.sel === h.id}" aria-label="${esc(h.label)}, ${esc(h.loc)}. Show call details" style="--c:${COLORS[h.kind]}">
     <div class="hero-meta"><span class="eyebrow">${hot.length ? 'Nearby & recent' : 'Closest call'}</span><span class="incident-kind">${GLYPH[h.kind]}${KIND_NAME[h.kind]}</span></div>
     <div class="what">${esc(h.label)}${isNew(h) ? '<b class="newpill">New</b>' : ''}${SERIOUS(h) ? '<i class="flag ser" title="Serious"></i>' : ''}</div>
-    <div class="where">${esc(h.loc)}</div>
+    <div class="where">${esc(h.loc)}${tagline(h)}</div>
     <div class="top"><div class="distance"><div class="dist">${fmtDist(h.km, h.approx)}</div><span class="distance-label">away</span></div><div class="direction-meta"><span class="when">${ago(h.t)}</span><div class="compass"><div class="arrow" data-b="${h.b.toFixed(0)}" style="transform:rotate(${turn(h)}deg)">${ARROW}</div></div></div></div>
     <div class="why"><span>${why}</span><svg class="disclosure" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></div>
     ${details(h)}
@@ -991,7 +1047,7 @@ function renderAll() {
     const flag = SERIOUS(r) ? '<i class="flag ser" title="Serious"></i>' : isFresh(r, now) ? '<i class="flag new" title="New"></i>' : '';
     return `<div class="row${old ? ' old' : ''}${S.sel === r.id ? ' sel' : ''}" data-id="${esc(r.id)}" role="button" tabindex="0" aria-expanded="${S.sel === r.id}" aria-label="${esc(r.label)}, ${esc(r.loc)}. Show call details" style="--c:${COLORS[r.kind]}">
       <span class="glyph">${GLYPH[r.kind]}</span>
-      <div class="mid"><div class="what"><span>${esc(r.label)}</span>${isNew(r) ? '<b class="newpill">New</b>' : ''}${flag}</div><div class="sub">${esc(r.loc)}</div></div>
+      <div class="mid"><div class="what"><span>${esc(r.label)}</span>${isNew(r) ? '<b class="newpill">New</b>' : ''}${flag}</div><div class="sub">${esc(r.loc)}${tagline(r)}</div></div>
       <div class="far"><div class="km">${fmtDist(r.km, r.approx)}<span class="arrow" data-b="${r.b.toFixed(0)}" style="transform:rotate(${turn(r)}deg)">${ARROW}</span></div><div class="ago">${ago(r.t)}</div></div>
       ${details(r)}
     </div>`;
